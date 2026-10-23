@@ -1,0 +1,4 @@
+outputs/
+*.sqlite
+public/kanketo_config.php
+public/kanketo_data/

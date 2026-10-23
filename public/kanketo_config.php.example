@@ -1,0 +1,30 @@
+<?php
+/**
+ * Kurage お客様アンケート の設定。このファイルを kanketo_config.php という名前でコピーして使います。
+ * 書き換え方に迷ったら、このファイルをAI（Claude Code など）に見せて「〇〇にしたい」と頼んでください。
+ */
+define('KA_SHOP_NAME', 'お店の名前');
+
+// 設問の雛形：restaurant（飲食）/ beauty（美容）/ clinic（クリニック）/ hotel（宿泊）
+define('KA_TEMPLATE', 'restaurant');
+
+// 席ごと・担当ごとにQRコードを分けるとき（'QRの記号' => '表示する名前'）。分けないなら array() のまま
+define('KA_SPOTS', array('t1' => '1番テーブル', 'counter' => 'カウンター'));
+
+// Google の場所ID（Place ID）。空にしておくと、Google への案内は出しません
+// 調べ方：https://developers.google.com/maps/documentation/places/web-service/place-id
+define('KA_GOOGLE_PLACE_ID', '');
+
+// お客様が書いたひと言を、AIで読みやすく整える（お客様の言葉だけを使う。ほめ言葉や数字は足さない）
+define('KA_AI_DRAFT', true);
+define('KA_API_BASE', 'https://api.openai.com/v1');   // OpenAI 互換の API
+define('KA_API_KEY', '');                              // 空なら、整えずに書いたひと言をそのまま出す
+define('KA_MODEL', 'gpt-4o-mini');
+
+// 低い評価（総合が KA_LOW_SCORE 以下）が来たら、ここへメール
+define('KA_NOTIFY_EMAIL', '');
+define('KA_NOTIFY_FROM', '');
+define('KA_LOW_SCORE', 2);
+
+// 管理画面（kanketo.php?p=admin）のパスワード。空のあいだは入れません
+define('KA_ADMIN_PASSWORD', '');
