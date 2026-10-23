@@ -14,6 +14,9 @@ $ld = array('@context' => 'https://schema.org', '@graph' => array(
     array('@type' => 'WebPage', 'name' => $title, 'url' => $url, 'description' => $desc, 'inLanguage' => 'ja'),
     array('@type' => 'SoftwareApplication', 'name' => 'Kurage お客様アンケート', 'applicationCategory' => 'BusinessApplication', 'operatingSystem' => 'Web（PHP）',
           'url' => $url, 'description' => $desc, 'publisher' => array('@type' => 'Organization', 'name' => '株式会社エクスブリッジ', 'url' => 'https://exbridge.jp/')),
+    array('@type' => 'VideoObject', 'name' => 'Kurage お客様アンケート 60秒PV', 'description' => $desc,
+          'thumbnailUrl' => 'https://kurage.exbridge.jp/pv/kanketo-pv-poster.jpg', 'contentUrl' => 'https://kurage.exbridge.jp/pv/kanketo-pv-60s.mp4',
+          'uploadDate' => '2026-10-23', 'duration' => 'PT60S'),
     array('@type' => 'FAQPage', 'mainEntity' => array_map(fn($q) => array('@type' => 'Question', 'name' => $q[0], 'acceptedAnswer' => array('@type' => 'Answer', 'text' => $q[1])), $faq)),
     array('@type' => 'BreadcrumbList', 'itemListElement' => array(
         array('@type' => 'ListItem', 'position' => 1, 'name' => 'デモ一覧', 'item' => 'https://proto.exbridge.jp/'),
@@ -79,6 +82,11 @@ footer{padding:26px 0 36px;text-align:center;font-size:13px;color:var(--mut)}foo
   </div>
   <img class="mascot" src="https://kurage.exbridge.jp/images/kurage-mascot-cutout.png" width="240" height="240" alt="Kurage のマスコット">
 </div>
+
+<section><h2>60秒で分かる、Kurage お客様アンケート</h2>
+<video controls preload="none" playsinline poster="https://kurage.exbridge.jp/pv/kanketo-pv-poster.jpg" style="width:100%;height:auto;border-radius:16px;background:#12202f;display:block">
+<source src="https://kurage.exbridge.jp/pv/kanketo-pv-60s.mp4" type="video/mp4"></video>
+<p class="hint">映像生成: MiniMax H3（セルフホスト）</p></section>
 
 <section><h2>できること</h2><div class="grid3">
   <div class="card"><span class="tag">お客様</span><h3>アプリ不要、1分で答えられる</h3><p>QRコードかNFCタグから開いて、星をタップ。ひと言はキーボードのマイクで話しても書けます。名前や連絡先は聞きません。</p></div>
