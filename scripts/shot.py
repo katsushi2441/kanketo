@@ -20,6 +20,10 @@ with sync_playwright() as p:
         pg.goto(base + "/kanketo.php?p=admin"); pg.fill("input[name=password]", "demo"); pg.click("button")
         pg.screenshot(path=f"{out}/admin-{w}.png", full_page=True)
         print(w, "admin", pg.evaluate("document.documentElement.scrollWidth-innerWidth"))
+        for name in ("stats&period=all", "reply"):
+            pg.goto(base + "/kanketo.php?p=" + name); pg.wait_for_timeout(500)
+            pg.screenshot(path=f"{out}/{name.split('&')[0]}-{w}.png", full_page=True)
+            print(w, name, pg.evaluate("document.documentElement.scrollWidth-innerWidth"))
         pg.goto(base + "/kanketo.php?p=qr"); pg.wait_for_timeout(1500)
         pg.screenshot(path=f"{out}/qr-{w}.png", full_page=True)
         print(w, "qr", pg.evaluate("document.documentElement.scrollWidth-innerWidth"))

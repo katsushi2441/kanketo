@@ -106,8 +106,8 @@ footer{padding:26px 0 36px;text-align:center;font-size:13px;color:var(--mut)}foo
 </section>
 
 <section><div class="card" style="text-align:center"><h2 style="margin-bottom:6px">自分のお店で使いたい方へ</h2>
-<p>PHPが動くレンタルサーバーに置くだけで動く、1ファイルのシステムです。導入や、お店に合わせた設問づくりのご相談は、こちらから。</p>
-<p class="btns" style="justify-content:center;margin-top:12px"><a class="btn" href="https://exbridge.jp/contact.php?ref=kanketo-demo&amp;subject=<?= rawurlencode('「Kurage お客様アンケート」の導入について') ?>#form">導入について相談する</a></p></div></section>
+<p>PHPが動くレンタルサーバーに置くだけで動く、1ファイルのシステムです。ソースコードごと買い切りで、月額はかかりません。お店に合わせた設問づくりや設置のご相談も承ります。</p>
+<p class="btns" style="justify-content:center;margin-top:12px"><a class="btn" href="https://kappstore.exbridge.jp/app.php?id=0ef9191df8969b56#ref=kanketo-demo">導入版を見る（税込110,000円）</a><a class="btn ghost" href="https://exbridge.jp/contact.php?ref=kanketo-demo&amp;subject=<?= rawurlencode('「Kurage お客様アンケート」の導入について') ?>#form">導入について相談する</a></p></div></section>
 </main>
 <footer><a href="https://proto.exbridge.jp/">デモ一覧</a>　｜　<a href="https://exbridge.jp/">株式会社エクスブリッジ</a>
 <p style="margin:6px 0">これはデモです。</p><script src=https://kurage.exbridge.jp/partner-bar.js defer></script></footer>

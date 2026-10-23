@@ -134,6 +134,8 @@ function ka_db(): PDO {
     $db->exec('CREATE TABLE IF NOT EXISTS answers (id INTEGER PRIMARY KEY, token TEXT UNIQUE, created_at TEXT, spot TEXT, lang TEXT,
                score INTEGER, answers TEXT, comment TEXT, draft_used INTEGER DEFAULT 0, google_click INTEGER DEFAULT 0, notified INTEGER DEFAULT 0)');
     $db->exec('CREATE TABLE IF NOT EXISTS rl (ip TEXT, kind TEXT, ts INTEGER)');
+    $db->exec('CREATE TABLE IF NOT EXISTS replies (id INTEGER PRIMARY KEY, created_at TEXT, stars INTEGER, review TEXT, note TEXT, reply TEXT)');
+    $db->exec('CREATE TABLE IF NOT EXISTS summaries (period TEXT PRIMARY KEY, created_at TEXT, n INTEGER, text TEXT)');
     if (KA_DEMO && (int)$db->query('SELECT COUNT(*) FROM answers')->fetchColumn() === 0) { ka_seed_demo($db); }
     return $db;
 }
@@ -188,25 +190,63 @@ function ka_draft_ok(string $src, string $draft, string $lang): bool {
     $hit = 0; foreach ($a as $g) { if (isset($b[$g])) { $hit++; } }
     return $hit / count($a) >= 0.35;
 }
-function ka_ai_draft(string $src, string $lang): ?string {
+/** OpenAI 互換の API に1回だけ聞く。失敗したら null */
+function ka_chat(string $sys, string $user, int $max_tokens = 400, float $temp = 0.2): ?string {
     if (KA_API_BASE === '' || KA_API_KEY === '') { return null; }
-    $sys = 'あなたは校正係です。お客様が書いた感想を、口コミとして読みやすい文章に整えるだけです。'
-         . '規則：書かれていない事実・感想・ほめ言葉・評価・数字を足さない。不満や否定的な内容は弱めずに、そのまま残す。'
-         . 'お店の宣伝や、検索を意識した言葉を入れない。入力と同じ言語で書く。1〜3文。整えた文章だけを出力する。';
-    $payload = json_encode(array('model' => KA_MODEL, 'temperature' => 0.2, 'max_tokens' => 400,
-        'messages' => array(array('role' => 'system', 'content' => $sys),
-            // 指定しないと英語の感想を日本語に訳してしまう（2026-10-23 実測）。出力の言語を明示する
-            array('role' => 'user', 'content' => '出力の言語：' . array('ja' => '日本語', 'en' => 'English', 'zh' => '中文（简体）', 'ko' => '한국어')[$lang] . "（訳さない）\n---\n" . $src))),
-        JSON_UNESCAPED_UNICODE);
+    $payload = json_encode(array('model' => KA_MODEL, 'temperature' => $temp, 'max_tokens' => $max_tokens,
+        'messages' => array(array('role' => 'system', 'content' => $sys), array('role' => 'user', 'content' => $user))), JSON_UNESCAPED_UNICODE);
     $ch = curl_init(rtrim(KA_API_BASE, '/') . '/chat/completions');
-    curl_setopt_array($ch, array(CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 60,
+    curl_setopt_array($ch, array(CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 90,
         CURLOPT_HTTPHEADER => array('Content-Type: application/json', 'Authorization: Bearer ' . KA_API_KEY)));
     $res = curl_exec($ch); $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE); curl_close($ch);
     if ($res === false || $code !== 200) { return null; }
     $j = json_decode((string)$res, true);
     $out = trim((string)($j['choices'][0]['message']['content'] ?? ''));
     $out = (string)preg_replace('/^[\s"「『]+|[\s"」』]+$/u', '', $out);   // trim() はバイト単位なので日本語の括弧に使わない
-    return ka_draft_ok($src, $out, $lang) ? $out : null;
+    return $out !== '' ? $out : null;
+}
+const KA_LANG_NAME = array('ja' => '日本語', 'en' => 'English', 'zh' => '中文（简体）', 'ko' => '한국어');
+function ka_ai_draft(string $src, string $lang): ?string {
+    $sys = 'あなたは校正係です。お客様が書いた感想を、口コミとして読みやすい文章に整えるだけです。'
+         . '規則：書かれていない事実・感想・ほめ言葉・評価・数字を足さない。不満や否定的な内容は弱めずに、そのまま残す。'
+         . 'お店の宣伝や、検索を意識した言葉を入れない。入力と同じ言語で書く。1〜3文。整えた文章だけを出力する。';
+    // 指定しないと英語の感想を日本語に訳してしまう（2026-10-23 実測）。出力の言語を明示する
+    $out = ka_chat($sys, '出力の言語：' . KA_LANG_NAME[$lang] . "（訳さない）\n---\n" . $src);
+    return ($out !== null && ka_draft_ok($src, $out, $lang)) ? $out : null;
+}
+
+/* ---------- ③ 口コミへの返信の下書き（お店が書く返信。お店が確かめてから自分で投稿する） ---------- */
+function ka_reply_draft(int $stars, string $review, string $note): ?string {
+    $sys = 'あなたは「' . KA_SHOP_NAME . '」の店長の代わりに、Googleマップの口コミへの返信の下書きを書きます。'
+         . '規則：口コミと同じ言語で書く。3〜5文。最初にお礼を言う。'
+         . '不満が書かれていれば、言い訳をせずに受け止めてお詫びし、どう直すかは「店からの補足」に書かれていることだけを書く。'
+         . '補足に無い約束（割引・無料・返金・具体的な改善の日付など）をしない。'
+         . '補足が空なら、改善策（教育・増員・見直しなど）を書かず、「いただいた声をお店で共有します」程度にとどめる。お客様の名前や個人が分かることを書かない。'
+         . '宣伝の言葉や、検索を意識した言葉を入れない。口コミに書かれていないことを決めつけない。返信の本文だけを出力する。';
+    $user = "星の数：{$stars}\n口コミ：\n{$review}\n\n店からの補足（無ければ空）：\n{$note}";
+    return ka_chat($sys, $user, 600, 0.3);
+}
+
+/* ---------- ④ 集計 ---------- */
+function ka_period(): array {
+    $p = (string)($_GET['period'] ?? 'this');
+    if ($p === 'last') { return array('last', date('Y-m-01', strtotime('first day of last month')), date('Y-m-01'), '先月'); }
+    if ($p === 'all') { return array('all', '0000', '9999', 'すべて'); }
+    return array('this', date('Y-m-01'), '9999', '今月');
+}
+function ka_period_rows(array $per): array {
+    $st = ka_db()->prepare('SELECT * FROM answers WHERE created_at >= ? AND created_at < ? ORDER BY id DESC');
+    $st->execute(array($per[1], $per[2])); return $st->fetchAll(PDO::FETCH_ASSOC);
+}
+function ka_ai_summary(array $rows): ?string {
+    $lines = array();
+    foreach ($rows as $r) { if (trim((string)$r['comment']) !== '' && count($lines) < 150) { $lines[] = '★' . $r['score'] . '：' . mb_substr(str_replace("\n", ' ', (string)$r['comment']), 0, 200); } }
+    if (!$lines) { return null; }
+    $sys = 'あなたはお店の改善を手伝う担当です。お客様アンケートのひと言だけを材料に、日本語でまとめます。'
+         . '規則：ひと言に書かれていないことを足さない。数は数えた件数だけを書く。'
+         . '次の3つの見出しで、それぞれ箇条書き3つまで：「よく褒められている点」「よく出ている不満」「直すと効きそうなこと」。'
+         . '「直すと効きそうなこと」は、不満のひと言から言えることだけを、具体的に短く書く。';
+    return ka_chat($sys, 'ひと言（全' . count($lines) . "件）：\n" . implode("\n", $lines), 900, 0.2);
 }
 function ka_json(array $a, int $code = 200): void {
     http_response_code($code); header('Content-Type: application/json; charset=utf-8');
@@ -219,11 +259,11 @@ function ka_seed_demo(PDO $db): void {
         array(5, array('food' => 5, 'service' => 5, 'again' => 'はい'), 'ランチの日替わりがおいしかったです。また来ます。', 'ja', 't1'),
         array(4, array('food' => 4, 'service' => 5, 'again' => 'はい'), '店員さんが席を案内してくれて助かりました。', 'ja', 't2'),
         array(2, array('food' => 3, 'service' => 2, 'again' => 'たぶん'), '注文してから料理が来るまで、かなり待ちました。', 'ja', 't1'),
-        array(5, array('food' => 5, 'service' => 4, 'again' => 'Yes'), 'Great coffee and a quiet place to work.', 'en', ''),
+        array(5, array('food' => 5, 'service' => 4, 'again' => 'はい'), 'Great coffee and a quiet place to work.', 'en', ''),
         array(3, array('food' => 3, 'service' => 4, 'again' => 'たぶん'), '', 'ja', 'counter'),
-        array(4, array('food' => 4, 'service' => 4, 'again' => '想'), '咖啡很好喝，店员很亲切。', 'zh', 't2'),
+        array(4, array('food' => 4, 'service' => 4, 'again' => 'はい'), '咖啡很好喝，店员很亲切。', 'zh', 't2'),
         array(1, array('food' => 2, 'service' => 1, 'again' => 'いいえ'), '会計で声をかけても、しばらく気づいてもらえませんでした。', 'ja', 'counter'),
-        array(5, array('food' => 5, 'service' => 5, 'again' => '네'), '디저트가 맛있었어요.', 'ko', ''),
+        array(5, array('food' => 5, 'service' => 5, 'again' => 'はい'), '디저트가 맛있었어요.', 'ko', ''),
     );
     $st = $db->prepare('INSERT INTO answers (token, created_at, spot, lang, score, answers, comment) VALUES (?,?,?,?,?,?,?)');
     foreach ($rows as $i => $r) {
@@ -247,7 +287,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $p === 'send') {
             if ($q['id'] === 'overall') { continue; }
             $v = (string)($_POST['q_' . $q['id']] ?? '');
             if ($q['type'] === 'stars') { $v = (string)max(0, min(5, (int)$v)); if ($v === '0') { $v = ''; } }
-            else { $ok = array(); foreach ($q['opts'] as $o) { $ok[] = ka_tr($o); } if (!in_array($v, $ok, true)) { $v = ''; } }
+            else {   // どの言語で答えても、集計できるように1つ目の言語（日本語）の選択肢で保存する
+                $hit = ''; foreach ($q['opts'] as $o) { if ($v === ka_tr($o)) { $hit = (string)$o[0]; } } $v = $hit;
+            }
             $ans[$q['id']] = $v;
         }
         $comment = mb_substr(trim((string)($_POST['comment'] ?? '')), 0, 600);
@@ -285,15 +327,17 @@ if ($p === 'go') {
 }
 
 // 管理画面
-if (in_array($p, array('admin', 'csv', 'qr', 'logout'), true)) {
+if (in_array($p, array('admin', 'csv', 'qr', 'logout', 'reply', 'stats'), true)) {
     if ($p === 'logout') { unset($_SESSION['ka_ok']); header('Location: ' . ka_self() . '?p=admin'); exit; }
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
-        if (KA_ADMIN_PASSWORD !== '' && hash_equals(KA_ADMIN_PASSWORD, (string)$_POST['password'])) { $_SESSION['ka_ok'] = 1; session_regenerate_id(true); }
+        if (KA_ADMIN_PASSWORD !== '' && hash_equals(KA_ADMIN_PASSWORD, (string)$_POST['password'])) { $_SESSION['ka_ok'] = 1; session_regenerate_id(true); $_SESSION['ka_csrf'] = bin2hex(random_bytes(16)); }
         else { $login_err = true; }
     }
     if (empty($_SESSION['ka_ok'])) { ka_page_login($login_err ?? false); exit; }
     if ($p === 'csv') { ka_csv(); exit; }
     if ($p === 'qr') { ka_page_qr(); exit; }
+    if ($p === 'reply') { ka_page_reply(); exit; }
+    if ($p === 'stats') { ka_page_stats(); exit; }
     ka_page_admin(); exit;
 }
 
@@ -435,7 +479,7 @@ function ka_page_login(bool $err): void {
 }
 
 function ka_admin_tabs(string $on): string {
-    $a = array('admin' => '回答の一覧', 'qr' => 'QRコードの印刷', 'csv' => 'CSVで書き出す', 'logout' => '出る');
+    $a = array('admin' => '回答の一覧', 'stats' => '集計', 'reply' => '口コミへの返信', 'qr' => 'QRコードの印刷', 'csv' => 'CSVで書き出す', 'logout' => '出る');
     $s = '<div class="tabs noprint">';
     foreach ($a as $k => $v) { $s .= '<a class="btn ' . ($k === $on ? '' : 'ghost') . '" style="padding:8px 16px;font-size:14px" href="?p=' . $k . '">' . h($v) . '</a>'; }
     return $s . '</div>';
@@ -497,5 +541,125 @@ function ka_page_qr(): void {
     }
     echo '</div></div><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>'
        . '<script>document.querySelectorAll("[data-u]").forEach(function(el){var q=qrcode(0,"M");q.addData(el.dataset.u);q.make();el.innerHTML=q.createSvgTag({cellSize:5,margin:2});var s=el.querySelector("svg");if(s){s.style.width="180px";s.style.height="180px";}});</script>';
+    ka_foot();
+}
+
+function ka_csrf_field(): string { return '<input type="hidden" name="csrf" value="' . h($_SESSION['ka_csrf'] ?? '') . '">'; }
+function ka_csrf_ok(): bool { return isset($_SESSION['ka_csrf'], $_POST['csrf']) && hash_equals((string)$_SESSION['ka_csrf'], (string)$_POST['csrf']); }
+
+/* ---------- ③ 口コミへの返信 ---------- */
+function ka_page_reply(): void {
+    $msg = ''; $stars = 3; $review = ''; $note = ''; $reply = null;
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ka_csrf_ok()) {
+        $stars = max(1, min(5, (int)($_POST['stars'] ?? 3)));
+        $review = mb_substr(trim((string)($_POST['review'] ?? '')), 0, 2000);
+        $note = mb_substr(trim((string)($_POST['note'] ?? '')), 0, 600);
+        if ($review === '') { $msg = '口コミの本文を貼り付けてください。'; }
+        elseif (!ka_rate_ok('reply', 40)) { $msg = '短い時間に何度も作ったため、しばらくしてからお試しください。'; }
+        else {
+            $reply = ka_reply_draft($stars, $review, $note);
+            if ($reply === null) { $msg = 'AIにつながらず、下書きを作れませんでした。設定の KA_API_BASE と KA_API_KEY を確かめてください。'; }
+            else { ka_db()->prepare('INSERT INTO replies (created_at, stars, review, note, reply) VALUES (?,?,?,?,?)')->execute(array(date('Y-m-d H:i'), $stars, $review, $note, $reply)); }
+        }
+    }
+    ka_head('口コミへの返信｜' . KA_SHOP_NAME, true);
+    echo '<header class="top"><div class="wrap"><b>' . h(KA_SHOP_NAME) . '　口コミへの返信</b></div></header><div class="wrap">' . ka_admin_tabs('reply')
+       . '<p class="mut">Googleマップに付いた口コミを貼り付けると、お店からの返信の下書きをAIが作ります。確かめて直してから、Googleビジネスプロフィールの管理画面で返信してください。'
+       . '下書きは、補足に書いたこと以外の約束（割引・返金・改善の日付など）をしないように作ります。</p>';
+    if ($msg !== '') { echo '<p class="err">' . h($msg) . '</p>'; }
+    $sample = '注文してから料理が出てくるまで30分以上かかりました。店員さんに声をかけても、なかなか来てもらえなかったです。味は良かっただけに残念です。';
+    echo '<form class="card" method="post" action="?p=reply">' . ka_csrf_field()
+       . '<p class="q">星の数</p><div class="choice">';
+    for ($i = 1; $i <= 5; $i++) { echo '<input type="radio" id="st' . $i . '" name="stars" value="' . $i . '"' . ($i === $stars ? ' checked' : '') . '><label for="st' . $i . '">★' . $i . '</label>'; }
+    echo '</div><p class="q">口コミの本文</p><textarea name="review" id="rv" required>' . h($review) . '</textarea>'
+       . (KA_DEMO ? '<p class="note"><a href="#" onclick="document.getElementById(\'rv\').value=' . h(json_encode($sample, JSON_UNESCAPED_UNICODE)) . ';document.getElementById(\'st2\').checked=true;return false">見本の口コミを入れる</a></p>' : '')
+       . '<p class="q">店からの補足（任意）</p><textarea name="note" style="min-height:70px" placeholder="例：11月から、昼の時間帯はホールの人を1人増やします">' . h($note) . '</textarea>'
+       . '<p class="note">ここに書いたことだけが、返信の中で「これからどうするか」として使われます。</p>'
+       . '<p style="margin-top:14px"><button class="btn">返信の下書きを作る</button></p></form>';
+    if ($reply !== null) {
+        echo '<div class="card"><b>返信の下書き</b><textarea id="rp" style="margin-top:8px;min-height:150px">' . h($reply) . '</textarea>'
+           . '<p><button class="btn ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById(\'rp\').value);this.textContent=\'コピーしました\'">コピーする</button></p></div>';
+    }
+    $rows = ka_db()->query('SELECT * FROM replies ORDER BY id DESC LIMIT 10')->fetchAll(PDO::FETCH_ASSOC);
+    if ($rows) {
+        echo '<div class="card"><b>これまでの下書き（新しい順に10件）</b>';
+        foreach ($rows as $r) {
+            echo '<details style="margin-top:10px"><summary>' . h($r['created_at']) . '　★' . (int)$r['stars'] . '　' . h(mb_strimwidth((string)$r['review'], 0, 50, '…')) . '</summary>'
+               . '<p class="note">口コミ：' . nl2br(h($r['review'])) . '</p><p style="white-space:pre-wrap">' . h($r['reply']) . '</p></details>';
+        }
+        echo '</div>';
+    }
+    echo '</div>';
+    ka_foot();
+}
+
+/* ---------- ④ 集計 ---------- */
+function ka_bar(float $v, float $max, string $label): string {
+    $w = $max > 0 ? round($v / $max * 100) : 0;
+    return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0"><span style="width:64px;flex:none;font-size:13px">' . h($label) . '</span>'
+         . '<span style="flex:1;background:#eef3f4;border-radius:6px;height:14px;min-width:0"><span style="display:block;height:14px;border-radius:6px;background:var(--b);width:' . $w . '%"></span></span>'
+         . '<span style="width:44px;flex:none;text-align:right;font-size:13px">' . (int)$v . '</span></div>';
+}
+function ka_page_stats(): void {
+    $per = ka_period(); $rows = ka_period_rows($per); $n = count($rows); $qs = ka_questions();
+    $key = $per[0] . ':' . $per[1];
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ka_csrf_ok() && isset($_POST['summarize'])) {
+        if (!ka_rate_ok('summary', 20)) { $sum_err = '短い時間に何度も作ったため、しばらくしてからお試しください。'; }
+        else {
+            $t = ka_ai_summary($rows);
+            if ($t === null) { $sum_err = 'ひと言が無いか、AIにつながらずまとめられませんでした。'; }
+            else { ka_db()->prepare('INSERT OR REPLACE INTO summaries VALUES (?,?,?,?)')->execute(array($key, date('Y-m-d H:i'), $n, $t)); }
+        }
+    }
+    ka_head('集計｜' . KA_SHOP_NAME, true);
+    echo '<header class="top"><div class="wrap"><b>' . h(KA_SHOP_NAME) . '　集計</b></div></header><div class="wrap">' . ka_admin_tabs('stats') . '<div class="tabs noprint">';
+    foreach (array('this' => '今月', 'last' => '先月', 'all' => 'すべて') as $k => $v) {
+        echo '<a class="btn ' . ($k === $per[0] ? '' : 'ghost') . '" style="padding:6px 14px;font-size:13px" href="?p=stats&amp;period=' . $k . '">' . $v . '</a>';
+    }
+    echo '</div>';
+    if ($n === 0) { echo '<div class="card">' . h($per[3]) . 'の回答はまだありません。</div></div>'; ka_foot(); return; }
+    $avg = array_sum(array_column($rows, 'score')) / $n;
+    $low = count(array_filter($rows, fn($r) => (int)$r['score'] <= KA_LOW_SCORE));
+    $gc = count(array_filter($rows, fn($r) => (int)$r['google_click'] === 1));
+    $cm = count(array_filter($rows, fn($r) => trim((string)$r['comment']) !== ''));
+    echo '<div class="card"><b>' . h($per[3]) . '：回答 ' . $n . '件</b>　総合の平均 ' . number_format($avg, 2) . '　低い評価 ' . $low . '件（' . round($low / $n * 100) . '%）'
+       . '　ひと言あり ' . $cm . '件　Googleのボタン ' . $gc . '人（' . round($gc / $n * 100) . '%）</div>';
+    // 総合の星の分布
+    $dist = array_fill(1, 5, 0); foreach ($rows as $r) { $dist[(int)$r['score']]++; }
+    echo '<div class="qrs" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))"><div style="text-align:left"><b>総合の星</b>';
+    for ($i = 5; $i >= 1; $i--) { echo ka_bar($dist[$i], max($dist), '★' . $i); }
+    echo '</div>';
+    // 設問ごと
+    foreach ($qs as $q) {
+        if ($q['id'] === 'overall') { continue; }
+        echo '<div style="text-align:left"><b>' . h($q['q'][0]) . '</b>';
+        if ($q['type'] === 'stars') {
+            $vals = array(); foreach ($rows as $r) { $a = json_decode((string)$r['answers'], true) ?: array(); if (($a[$q['id']] ?? '') !== '') { $vals[] = (int)$a[$q['id']]; } }
+            echo '<p style="margin:6px 0 0;font-size:26px;font-weight:900;color:var(--b)">' . ($vals ? number_format(array_sum($vals) / count($vals), 2) : '—') . '<span class="mut" style="font-size:13px">　/5（' . count($vals) . '件）</span></p>';
+        } else {
+            $cnt = array(); foreach ($rows as $r) { $a = json_decode((string)$r['answers'], true) ?: array(); $v = (string)($a[$q['id']] ?? ''); if ($v !== '') { $cnt[$v] = ($cnt[$v] ?? 0) + 1; } }
+            arsort($cnt); foreach ($cnt as $k => $v) { echo ka_bar($v, max($cnt), $k); }
+            if (!$cnt) { echo '<p class="mut">—</p>'; }
+        }
+        echo '</div>';
+    }
+    // 場所・担当ごと、言語ごと
+    $sp = array(); $lg = array();
+    foreach ($rows as $r) {
+        $k = $r['spot'] !== '' ? (KA_SPOTS[$r['spot']] ?? $r['spot']) : '共通'; $sp[$k][] = (int)$r['score'];
+        $lg[$r['lang']] = ($lg[$r['lang']] ?? 0) + 1;
+    }
+    echo '<div style="text-align:left"><b>場所・担当ごと</b><div class="scroll-x"><table><tr><th>場所・担当</th><th>件数</th><th>総合の平均</th></tr>';
+    foreach ($sp as $k => $v) { echo '<tr><td>' . h($k) . '</td><td>' . count($v) . '</td><td>' . number_format(array_sum($v) / count($v), 2) . '</td></tr>'; }
+    echo '</table></div></div><div style="text-align:left"><b>答えた言語</b>';
+    foreach ($lg as $k => $v) { echo ka_bar($v, max($lg), KA_LANGS[$k] ?? $k); }
+    echo '</div></div>';
+    // AIのまとめ
+    $st = ka_db()->prepare('SELECT * FROM summaries WHERE period = ?'); $st->execute(array($key)); $s = $st->fetch(PDO::FETCH_ASSOC);
+    echo '<div class="card"><b>ひと言のまとめ（AI）</b><p class="note">この期間のひと言だけを材料に、よく褒められている点・よく出ている不満・直すと効きそうなことをまとめます。ひと言に書かれていないことは足しません。</p>';
+    if (!empty($sum_err)) { echo '<p class="err">' . h($sum_err) . '</p>'; }
+    if ($s) { echo '<p class="note">' . h($s['created_at']) . ' に作成（そのときの回答 ' . (int)$s['n'] . '件）</p><div style="white-space:pre-wrap;line-height:1.8">' . h($s['text']) . '</div>'; }
+    echo '<form method="post" action="?p=stats&amp;period=' . h($per[0]) . '" style="margin-top:12px">' . ka_csrf_field()
+       . '<button class="btn ghost" name="summarize" value="1">' . ($s ? 'まとめを作り直す' : 'まとめを作る') . '</button></form></div></div>';
     ka_foot();
 }

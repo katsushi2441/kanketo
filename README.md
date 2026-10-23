@@ -10,6 +10,8 @@
 - 席ごと・担当ごとの QR コードを印刷でき、どこから答えたかが一覧に出る
 - 低い評価（総合が KA_LOW_SCORE 以下）は、その場でお店にメール
 - 回答の一覧と CSV の書き出し
+- 集計：総合の星の分布・設問ごとの平均・席や担当ごと・言語ごと、ひと言の AI まとめ（褒められている点・不満・直すと効きそうなこと）
+- 口コミへの返信の下書き：Google の口コミを貼ると、お店からの返信を AI が下書き（補足に書いたこと以外は約束しない）
 - Google マップへの案内と、お客様が書いたひと言を AI で読みやすく整える下書き（任意）
 
 ## Google のポリシーを守る作り
@@ -23,8 +25,5 @@
 2. `public/kanketo_config.php.example` を `kanketo_config.php` にコピーして書き換える
 3. `kanketo_data/` は自動で作られ、Web から読めないように `.htaccess` が置かれる（nginx の場合は別途拒否する）
 4. `kanketo.php?p=admin` からQRコードを印刷して、席に置く
-
-## デモの公開（当社用）
-`bash scripts/deploy_demo.sh` — AI は社内の gemma4（共通の中継 :18343、合言葉は kaima/.env の RELAY_CLIENT_KANKETO）。
 
 MIT License / 株式会社エクスブリッジ
